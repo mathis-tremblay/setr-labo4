@@ -1,4 +1,24 @@
-CMakeLists.txt.user
+# Kernel module build artifacts
+*.ko
+*.o
+*.mod
+*.mod.c
+*.mod.o
+*.symvers
+*.order
+
+# Kbuild generated files
+Module.symvers
+modules.order
+modules.builtin
+modules.builtin.modinfo
+
+# Kbuild metadata/dependency files
+.*.cmd
+.*.o.d
+
+# Temporary build directories
+.tmp_versions/CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
 CMakeScripts
@@ -10,6 +30,11 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 CMakeUserPresets.json
+
+./.vscode
+./build
+./src/vscode
+./src/build
 
 # CLion
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

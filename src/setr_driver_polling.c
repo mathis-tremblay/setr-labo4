@@ -43,7 +43,6 @@
 #define TAILLE_BUFFER 10
 
 // Définit le nombre de lignes et de colonnes de votre clavier
-// TODO: adaptez-le selon le modèle de clavier que vous avez!
 #define NOMBRE_LIGNES 4
 #define NOMBRE_COLONNES 3
 
@@ -206,6 +205,7 @@ static int __init setrclavier_init(void){
         return PTR_ERR(setrDevice);
     }
 
+
     // TODO
     // Initialisez les GPIO. Pour ce faire, vous DEVEZ utiliser l'API "GPIO Descriptor Consumer Interface"
     // https://www.kernel.org/doc/html/v6.1/driver-api/gpio/consumer.html
@@ -220,10 +220,45 @@ static int __init setrclavier_init(void){
     //
     // Vous devez également initialiser le mutex de synchronisation.
 
+    gpiod_add_lookup_table(&gpios_table); // 1) Enregistrement de la table de correspondances
 
+    // 2) 
+    gpioLecture = gpiod_get_array(setrDevice, "lecture", GPIOD_IN);
+    if (IS_ERR(gpioLecture)){
+        gpiod_remove_lookup_table(&gpios_table);
+        device_destroy(setrClasse, MKDEV(majorNumber, 0));
+        class_destroy(setrClasse);
+        unregister_chrdev(majorNumber, DEV_NAME);
+        printk(KERN_ALERT "SETR_CLAVIER : Erreur lors de l'appel de gpiod_get_array en lecture.'\n");
+        return PTR_ERR(gpioLecture);
+    }
+
+    gpioEcriture = gpiod_get_array(setrDevice, "ecriture", GPIOD_OUT_LOW); // GPIOD_OUT_LOW fixe la valeur initiale de sortie (on démarre à 0 logique).
+    if (IS_ERR(gpioEcriture)){
+        gpiod_remove_lookup_table(&gpios_table);
+        gpiod_put_array(gpioLecture); // free gpiod_get_array précédant
+        device_destroy(setrClasse, MKDEV(majorNumber, 0));
+        class_destroy(setrClasse);
+        unregister_chrdev(majorNumber, DEV_NAME);
+        printk(KERN_ALERT "SETR_CLAVIER : Erreur lors de l'appel de gpiod_get_array en écriture.'\n");
+        return PTR_ERR(gpioEcriture);
+    }
+
+    // init mutex
+    mutex_init(&sync);
 
     // Le mutex devrait avoir été initialisé avant d'appeler la ligne suivante!
     task = kthread_run(pollClavier, NULL, "Thread_polling_clavier");
+    if (IS_ERR(task)){
+        gpiod_remove_lookup_table(&gpios_table);
+        gpiod_put_array(gpioLecture);
+        gpiod_put_array(gpioEcriture);
+        device_destroy(setrClasse, MKDEV(majorNumber, 0));
+        class_destroy(setrClasse);
+        unregister_chrdev(majorNumber, DEV_NAME);
+        printk(KERN_ALERT "SETR_CLAVIER : Erreur lors de la creation du thread de polling.\n");
+        return PTR_ERR(task);
+    }
 
     printk(KERN_INFO "SETR_CLAVIER : Fin de l'Initialisation!\n"); // Made it! device was initialized
 
@@ -243,6 +278,9 @@ static void __exit setrclavier_exit(void){
     // Écrivez le code permettant de relâcher (libérer) les GPIO
     // N'oubliez pas également de retirer la table de correspondances avec
     // gpiod_remove_lookup_table
+    gpiod_remove_lookup_table(&gpios_table);
+    gpiod_put_array(gpioLecture);
+    gpiod_put_array(gpioEcriture);
 
     // On retire correctement les différentes composantes du pilote
     device_destroy(setrClasse, MKDEV(majorNumber, 0));
@@ -282,7 +320,7 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
     // revienne alors à 0. Il est donc tout à fait possible que posCouranteEcriture soit INFÉRIEUR à
     // posCouranteLecture, et vous devez gérer ce cas sans perdre de caractères et en respectant les
     // autres conditions (par exemple, ne jamais copier plus que len caractères).
-
+    return 0; // temporaire
 }
 
 // On enregistre les fonctions d'initialisation et de destruction
@@ -291,6 +329,6 @@ module_exit(setrclavier_exit);
 
 // Description du module
 MODULE_LICENSE("GPL");            // Licence : laissez "GPL"
-MODULE_AUTHOR("Vous!");           // Vos noms
+MODULE_AUTHOR("Mathis Tremblay & Guillaume Laroche");           // Vos noms
 MODULE_DESCRIPTION("Lecteur de clavier externe par polling");  // Description du module
 MODULE_VERSION("2.0");            // Numéro de version
