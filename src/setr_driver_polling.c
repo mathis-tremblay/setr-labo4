@@ -149,25 +149,60 @@ static int pollClavier(void *arg){
     // TODO
     // Déclarez _toutes_ vos variables locales ici (le module est compilé avec un standard générant
     // un warning si une variable est déclarée après toute ligne de code)
-    
+    int ligne, colonne, ret;
+    size_t prochainePosEcriture;
+    unsigned long colonnesBitmap = 0;
+    unsigned long lignesBitmap = 0;
     
     printk(KERN_INFO "SETR_CLAVIER : Poll clavier declenche! \n");
     while(!kthread_should_stop()){           // Permet de s'arrêter en douceur lorsque kthread_stop() sera appelé
-      set_current_state(TASK_RUNNING);      // On indique qu'on est en train de faire quelque chose
+        set_current_state(TASK_RUNNING);      // On indique qu'on est en train de faire quelque chose
 
-      // TODO
-      // Écrivez le code permettant de lire la clavier. Vous DEVEZ utiliser l'API "GPIO Descriptor Consumer Interface"
-      // (ref : https://www.kernel.org/doc/html/v6.1/driver-api/gpio/consumer.html)
-      //
-      // En détail, vous devrez créer une boucle qui, pour chaque ligne d'écriture:
-      // 1) Active cette ligne et désactive les autres (en utilisant gpiod_set_array_value)
-      // 2) Lit la valeur des lignes d'entrée
-      // 3) Selon ces valeurs et le contenu de dernierEtat, détermine si une nouvelle touche a été pressée
-      // 4) Met à jour le buffer et dernierEtat en s'assurant d'éviter les race conditions avec le reste du module
+        // TODO
+        // Écrivez le code permettant de lire la clavier. Vous DEVEZ utiliser l'API "GPIO Descriptor Consumer Interface"
+        // (ref : https://www.kernel.org/doc/html/v6.1/driver-api/gpio/consumer.html)
+        //
+        // En détail, vous devrez créer une boucle qui, pour chaque ligne d'écriture:
+        // 1) Active cette ligne et désactive les autres (en utilisant gpiod_set_array_value)
+        // 2) Lit la valeur des lignes d'entrée
+        // 3) Selon ces valeurs et le contenu de dernierEtat, détermine si une nouvelle touche a été pressée
+        // 4) Met à jour le buffer et dernierEtat en s'assurant d'éviter les race conditions avec le reste du module
+        for (ligne=0; ligne<NOMBRE_LIGNES; ligne++){
+            lignesBitmap = 1UL << ligne; // on veut activer la ligne "ligne" et désactiver les autres, donc on met un 1 au bit correspondant à cette ligne, et des 0 aux autres
+            ret = gpiod_set_array_value(gpioEcriture->ndescs, gpioEcriture->desc, gpioEcriture->info, &lignesBitmap);
+            if (ret < 0){
+                printk(KERN_ALERT "SETR_CLAVIER : Erreur lors de l'appel de gpiod_set_array_value pour activer la ligne %d.\n", ligne);
+                continue; // on tente quand même les autres lignes
+            }
+            // 2) lecture des colonnes pour une ligne d'entrée
+            colonnesBitmap = 0;
+            ret = gpiod_get_array_value(gpioLecture->ndescs, gpioLecture->desc, gpioLecture->info, &colonnesBitmap);
+            if (ret < 0){
+                printk(KERN_ALERT "SETR_CLAVIER : Erreur lors de l'appel de gpiod_get_array_value pour lire les colonnes.\n");
+                continue;
+            }
+            for (colonne=0; colonne<NOMBRE_COLONNES; colonne++){
+                if ((colonnesBitmap & (1UL << colonne)) && !dernierEtat[ligne][colonne]){ // touche pressée alors qu'elle ne l'était pas avant
+                    if (mutex_lock_interruptible(&sync)){
+                        return -ERESTARTSYS; // si ne retoune pas 0, alors un signal d'arrêt a été reçu
+                    }
 
+                    prochainePosEcriture = (posCouranteEcriture + 1) % TAILLE_BUFFER;
+                    if (prochainePosEcriture != posCouranteLecture){ // si plein, on ignore la nouvelle touche
+                        data[posCouranteEcriture] = valeursClavier[ligne][colonne]; // écriture de la valeur de la touche dans le buffer
+                        posCouranteEcriture = prochainePosEcriture; // update de la position d'écriture
+                    }
 
-      set_current_state(TASK_INTERRUPTIBLE); // On indique qu'on peut être interrompu
-      msleep(pausePollingMs);                // On se met en pause un certain temps
+                    mutex_unlock(&sync);
+                    dernierEtat[ligne][colonne] = 1; // update de dernierEtat
+                } else if (!(colonnesBitmap & (1UL << colonne))){ // touche relâchée
+                    dernierEtat[ligne][colonne] = 0; // update de dernierEtat
+                }
+            }
+        }
+
+        set_current_state(TASK_INTERRUPTIBLE); // On indique qu'on peut être interrompu
+        msleep(pausePollingMs);                // On se met en pause un certain temps
     }
     printk(KERN_INFO "SETR_CLAVIER : Poll clavier stop! \n");
     return 0;
@@ -204,8 +239,6 @@ static int __init setrclavier_init(void){
         printk(KERN_ALERT "SETR_CLAVIER : Erreur lors de la creation du pilote de peripherique\n");
         return PTR_ERR(setrDevice);
     }
-
-
     // TODO
     // Initialisez les GPIO. Pour ce faire, vous DEVEZ utiliser l'API "GPIO Descriptor Consumer Interface"
     // https://www.kernel.org/doc/html/v6.1/driver-api/gpio/consumer.html
@@ -307,7 +340,10 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
     // TODO
     // Déclarez _toutes_ vos variables locales ici (le module est compilé avec un standard générant
     // un warning si une variable est déclarée après toute ligne de code)
-
+    size_t disponible;
+    size_t aLire;
+    size_t premierBloc;
+    size_t secondBloc;
     // TODO
     // Implémentez cette fonction de lecture
     // Celle-ci doit copier N caractères dans le buffer fourni en paramètre, N étant le minimum
@@ -320,7 +356,53 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
     // revienne alors à 0. Il est donc tout à fait possible que posCouranteEcriture soit INFÉRIEUR à
     // posCouranteLecture, et vous devez gérer ce cas sans perdre de caractères et en respectant les
     // autres conditions (par exemple, ne jamais copier plus que len caractères).
-    return 0; // temporaire
+
+    (void)filep;
+
+    if (mutex_lock_interruptible(&sync)){
+        return -ERESTARTSYS; // si ne retoune pas 0, alors un signal d'arrêt a été reçu
+    }
+
+    if (posCouranteLecture == posCouranteEcriture){
+        mutex_unlock(&sync);
+        return 0; // buffer vide
+    }
+
+    // calcule du nb d'octets disponibles
+    if (posCouranteEcriture >= posCouranteLecture){
+        disponible = posCouranteEcriture - posCouranteLecture;
+    } else {
+        disponible = TAILLE_BUFFER - posCouranteLecture + posCouranteEcriture;
+    }
+
+    // minimum entre le nombre d'octets disponibles dans le buffer et le nombre d'octets demandés (len)
+    aLire = min(len, disponible);
+
+    // on divise en 2 blocs dans le cas où on doit faire un "wrap around" du buffer circulaire
+    premierBloc = min(aLire, TAILLE_BUFFER - posCouranteLecture);
+    secondBloc = aLire - premierBloc;
+
+    // copie dans le buffer de l'utilisateur
+    if (copy_to_user(buffer, &data[posCouranteLecture], premierBloc)) {
+        mutex_unlock(&sync);
+        return -EFAULT;
+    }
+    if (secondBloc > 0 && copy_to_user(buffer + premierBloc, &data[0], secondBloc)) {
+        mutex_unlock(&sync);
+        return -EFAULT;
+    }
+
+    // update de la position de lecture
+    posCouranteLecture = (posCouranteLecture + aLire) % TAILLE_BUFFER;
+
+    // update de l'offset (si pas NULL), probablement pas utile dans notre cas, mais bonne pratique
+    if (offset != NULL){
+        *offset += aLire;
+    }
+
+    // fin lecture
+    mutex_unlock(&sync);
+    return aLire; // nb octets lus
 }
 
 // On enregistre les fonctions d'initialisation et de destruction
