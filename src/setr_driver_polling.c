@@ -150,6 +150,13 @@ static int pollClavier(void *arg){
     // Déclarez _toutes_ vos variables locales ici (le module est compilé avec un standard générant
     // un warning si une variable est déclarée après toute ligne de code)
     int ligne, colonne, ret;
+    int etatActuel[NOMBRE_LIGNES][NOMBRE_COLONNES];
+    int ligneActive[NOMBRE_LIGNES];
+    int colonneActive[NOMBRE_COLONNES];
+    int nbTouchesActives;
+    int nbLignesActives;
+    int nbColonnesActives;
+    int etatAmbigu;
     size_t prochainePosEcriture;
     unsigned long colonnesBitmap = 0;
     unsigned long lignesBitmap = 0;
@@ -157,6 +164,13 @@ static int pollClavier(void *arg){
     printk(KERN_INFO "SETR_CLAVIER : Poll clavier declenche! \n");
     while(!kthread_should_stop()){           // Permet de s'arrêter en douceur lorsque kthread_stop() sera appelé
         set_current_state(TASK_RUNNING);      // On indique qu'on est en train de faire quelque chose
+
+        memset(etatActuel, 0, sizeof(etatActuel));
+        memset(ligneActive, 0, sizeof(ligneActive));
+        memset(colonneActive, 0, sizeof(colonneActive));
+        nbTouchesActives = 0;
+        nbLignesActives = 0;
+        nbColonnesActives = 0;
 
         // TODO
         // Écrivez le code permettant de lire la clavier. Vous DEVEZ utiliser l'API "GPIO Descriptor Consumer Interface"
@@ -182,7 +196,32 @@ static int pollClavier(void *arg){
                 continue;
             }
             for (colonne=0; colonne<NOMBRE_COLONNES; colonne++){
-                if ((colonnesBitmap & (1UL << colonne)) && !dernierEtat[ligne][colonne]){ // touche pressée alors qu'elle ne l'était pas avant
+                if (colonnesBitmap & (1UL << colonne)){
+                    etatActuel[ligne][colonne] = 1;
+                    nbTouchesActives++;
+
+                    if (!ligneActive[ligne]){
+                        ligneActive[ligne] = 1;
+                        nbLignesActives++;
+                    }
+                    if (!colonneActive[colonne]){
+                        colonneActive[colonne] = 1;
+                        nbColonnesActives++;
+                    }
+                }
+            }
+        }
+
+        // Désactive toutes les lignes avant la prochaine itération
+        lignesBitmap = 0;
+        gpiod_set_array_value(gpioEcriture->ndescs, gpioEcriture->desc, gpioEcriture->info, &lignesBitmap);
+
+        // Cas ambigu typique de ghosting: matrice "rectangle" avec plus de 2 touches actives
+        etatAmbigu = (nbTouchesActives > 2 && nbLignesActives >= 2 && nbColonnesActives >= 2);
+
+        for (ligne=0; ligne<NOMBRE_LIGNES; ligne++){
+            for (colonne=0; colonne<NOMBRE_COLONNES; colonne++){
+                if (!etatAmbigu && etatActuel[ligne][colonne] && !dernierEtat[ligne][colonne]){
                     mutex_lock(&sync);
 
                     prochainePosEcriture = (posCouranteEcriture + 1) % TAILLE_BUFFER;
@@ -192,10 +231,9 @@ static int pollClavier(void *arg){
                     }
 
                     mutex_unlock(&sync);
-                    dernierEtat[ligne][colonne] = 1; // update de dernierEtat
-                } else if (!(colonnesBitmap & (1UL << colonne))){ // touche relâchée
-                    dernierEtat[ligne][colonne] = 0; // update de dernierEtat
                 }
+
+                dernierEtat[ligne][colonne] = etatActuel[ligne][colonne];
             }
         }
 
@@ -319,8 +357,6 @@ static void __exit setrclavier_exit(void){
     unregister_chrdev(majorNumber, DEV_NAME);
     printk(KERN_INFO "SETR_CLAVIER : Terminaison du driver\n");
 }
-
-
 
 
 static int dev_open(struct inode *inodep, struct file *filep){
