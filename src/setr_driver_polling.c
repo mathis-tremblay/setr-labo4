@@ -183,9 +183,7 @@ static int pollClavier(void *arg){
             }
             for (colonne=0; colonne<NOMBRE_COLONNES; colonne++){
                 if ((colonnesBitmap & (1UL << colonne)) && !dernierEtat[ligne][colonne]){ // touche pressée alors qu'elle ne l'était pas avant
-                    if (mutex_lock_interruptible(&sync)){
-                        return -ERESTARTSYS; // si ne retoune pas 0, alors un signal d'arrêt a été reçu
-                    }
+                    mutex_lock(&sync);
 
                     prochainePosEcriture = (posCouranteEcriture + 1) % TAILLE_BUFFER;
                     if (prochainePosEcriture != posCouranteLecture){ // si plein, on ignore la nouvelle touche
@@ -268,8 +266,8 @@ static int __init setrclavier_init(void){
 
     gpioEcriture = gpiod_get_array(setrDevice, "ecriture", GPIOD_OUT_LOW); // GPIOD_OUT_LOW fixe la valeur initiale de sortie (on démarre à 0 logique).
     if (IS_ERR(gpioEcriture)){
-        gpiod_remove_lookup_table(&gpios_table);
         gpiod_put_array(gpioLecture); // free gpiod_get_array précédant
+        gpiod_remove_lookup_table(&gpios_table);
         device_destroy(setrClasse, MKDEV(majorNumber, 0));
         class_destroy(setrClasse);
         unregister_chrdev(majorNumber, DEV_NAME);
@@ -283,9 +281,9 @@ static int __init setrclavier_init(void){
     // Le mutex devrait avoir été initialisé avant d'appeler la ligne suivante!
     task = kthread_run(pollClavier, NULL, "Thread_polling_clavier");
     if (IS_ERR(task)){
-        gpiod_remove_lookup_table(&gpios_table);
         gpiod_put_array(gpioLecture);
         gpiod_put_array(gpioEcriture);
+        gpiod_remove_lookup_table(&gpios_table);
         device_destroy(setrClasse, MKDEV(majorNumber, 0));
         class_destroy(setrClasse);
         unregister_chrdev(majorNumber, DEV_NAME);
@@ -311,9 +309,9 @@ static void __exit setrclavier_exit(void){
     // Écrivez le code permettant de relâcher (libérer) les GPIO
     // N'oubliez pas également de retirer la table de correspondances avec
     // gpiod_remove_lookup_table
-    gpiod_remove_lookup_table(&gpios_table);
     gpiod_put_array(gpioLecture);
     gpiod_put_array(gpioEcriture);
+    gpiod_remove_lookup_table(&gpios_table);
 
     // On retire correctement les différentes composantes du pilote
     device_destroy(setrClasse, MKDEV(majorNumber, 0));
