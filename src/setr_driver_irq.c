@@ -12,7 +12,7 @@
 * contenus dans ce fichier, ils contiennent des informations cruciales.
 *
 */
-//Test commit
+
 // Inclusion des en-têtes nécessaires
 // Vous pouvez en ajouter, mais n'oubliez pas que vous n'avez PAS
 // accès la libc! Vous ne pouvez vous servir que des fonctions fournies
@@ -142,7 +142,7 @@ static unsigned int irqId[NOMBRE_COLONNES];
 
 
 
-void func_tasklet_polling(unsigned long paramf){
+void func_tasklet_polling(unsigned long paramf) {
     // TODO
     // Déclarez _toutes_ vos variables locales ici (le module est compilé avec un standard générant
     // un warning si une variable est déclarée après toute ligne de code)
@@ -176,6 +176,167 @@ void func_tasklet_polling(unsigned long paramf){
     // Information importante : vous n'en avez techniquement pas besoin de toute façon puisque
     // cette fonction n'a pas à être exécutée en boucle, mais vous ne pouvez _pas_
     // faire un msleep ou une autre fonction similaire dans un tasklet!
+
+    // Declaration des variables locals
+    int ligne, colonne, ret;
+    int etatActuel[NOMBRE_LIGNES][NOMBRE_COLONNES];
+    int ligneActive[NOMBRE_LIGNES];
+    int colonneActive[NOMBRE_COLONNES];
+    int nbTouchesActives;
+    int nbLignesActives;
+    int nbColonnesActives;
+    int etatAmbigu;            // Pour etat de ghosting
+    size_t prochainePosEcriture;
+    unsigned long colonnesBitmap;
+    unsigned long lignesBitmap;
+
+    (void)paramf;
+
+    // Empeche le retraitement pendant qu'un balayage est en cours
+    // atomic_xchg car on a besoin d'un operation atomique (c'est un genre de mutex)
+    /*
+        On a un tasklet, donc mauvaise idee de prendre un mutex car un tasklet peut pas ''dormir''
+    */
+    if (atomic_xchg(&irqEnCours, 1) != 0) {
+        return;
+    }
+
+    memset(etatActuel, 0, sizeof(etatActuel));
+    memset(ligneActive, 0, sizeof(ligneActive));
+    memset(colonneActive, 0, sizeof(colonneActive));
+    nbTouchesActives = 0;
+    nbLignesActives = 0;
+    nbColonnesActives = 0;
+
+     // Balayage matriciel :
+     // une seule ligne active à la fois, apres lecture des colonnes
+     // Le but c'est transformer les signaux GPIO en matrice etatActuel[ligne][colonne]
+
+     // Pour toute les lignes du clavier
+    for (ligne = 0; ligne < NOMBRE_LIGNES; ligne++) {
+        // construit un entier avec un seul bit à 1
+        lignesBitmap = (1UL << ligne);
+        // applique le bitmap aux GPIO de sortie
+        // En gros on met chaque GPIO a la valeur du bit correspondant
+        ret = gpiod_set_array_value(gpioEcriture->ndescs,
+                                    gpioEcriture->desc,
+                                    gpioEcriture->info,
+                                    &lignesBitmap);
+        if (ret < 0) {
+            printk(KERN_ALERT
+                   "SETR_CLAVIER_IRQ : Erreur gpiod_set_array_value() ligne %d\n",
+                   ligne);
+            continue;
+        }
+
+        colonnesBitmap = 0;
+        ret = gpiod_get_array_value(gpioLecture->ndescs,
+                                    gpioLecture->desc,
+                                    gpioLecture->info,
+                                    &colonnesBitmap);
+        // En noyau linux les fonctions retourne un entier negatif si ya une erreur
+        // D'ou la raison qu'on utilise plus petit que 0                            
+        if (ret < 0) {
+            printk(KERN_ALERT
+                   "SETR_CLAVIER_IRQ : Erreur gpiod_get_array_value() lecture colonnes\n");
+            continue;
+        }
+        // On parcours chaque colonne pour verifier son etat
+        for (colonne = 0; colonne < NOMBRE_COLONNES; colonne++) {
+            // Si colonne active
+            if (colonnesBitmap & (1UL << colonne)) {
+                // Touche presser
+                etatActuel[ligne][colonne] = 1;
+                nbTouchesActives++;
+                // On regarde combien de colonne et ligne sont active
+                // le if est pour eviter de compter plusieurs fois la même ligne
+                if (!ligneActive[ligne]) {
+                    ligneActive[ligne] = 1;
+                    nbLignesActives++;
+                }
+
+                if (!colonneActive[colonne]) {
+                    colonneActive[colonne] = 1;
+                    nbColonnesActives++;
+                }
+            }
+        }
+    }
+
+     // Cas ambigu : ghosting
+     // Rectangle détecter avec plus de 2 touches
+
+    // Est-ce qu’on a assez de touches, de lignes et de colonnes actives pour pt avoir du ghosting ?
+    /*
+        En gros, il faut logiquement plus de 2 touches detecter, au moins 2 lignes et 2 colonnes
+    */
+    etatAmbigu = (nbTouchesActives > 2 &&
+                  nbLignesActives >= 2 &&
+                  nbColonnesActives >= 2);
+    // On passe sur chaque ligne et colonne du clavier pour verifier    
+    for (ligne = 0; ligne < NOMBRE_LIGNES; ligne++) {
+        for (colonne = 0; colonne < NOMBRE_COLONNES; colonne++) {
+
+            /*
+                On execute seulement si :
+                Pas de Ghosting (etatAmbigu est a 0)
+                La touche est actuellement appuyer (etatActuel[ligne][colonne])
+                La touche etait pas appuyer avant (!dernierEtat[ligne][colonne])
+            */
+            if (!etatAmbigu &&
+                etatActuel[ligne][colonne] &&
+                !dernierEtat[ligne][colonne]) {
+
+                // Zone critique pour data, posCouranteEcriture et posCouranteLecture    
+                mutex_lock(&sync);
+                
+                // buffer circulaire
+                prochainePosEcriture = (posCouranteEcriture + 1) % TAILLE_BUFFER;
+                if (prochainePosEcriture != posCouranteLecture) {
+                    // convertit la position matricielle en caractère réel
+                    /*
+                        EX : [0][0]->'1'
+                             [1][1]->'5'
+                    */
+                    data[posCouranteEcriture] = valeursClavier[ligne][colonne];
+                    posCouranteEcriture = prochainePosEcriture;
+                }
+
+                mutex_unlock(&sync);
+            }
+            // etat actuel devient dernier etat (logique)
+            dernierEtat[ligne][colonne] = etatActuel[ligne][colonne];
+        }
+    }
+
+    // Remettre le clavier dans un etat pret pour les nouvelles interuptions
+    // toutes les lignes à 1 pour que la prochaine vraie pression puisse provoquer un front montant sur une colonne
+
+    // On doit reset le bitmap qu'on a modifier avant
+    // Evite que le clavier devienne muet
+    lignesBitmap = 0;
+    for (ligne = 0; ligne < NOMBRE_LIGNES; ligne++) {
+        lignesBitmap |= (1UL << ligne);
+    }
+    // applique le bitmap aux GPIO de sortie
+     // En gros on met chaque GPIO a la valeur du bit correspondant
+    ret = gpiod_set_array_value(gpioEcriture->ndescs,
+                                gpioEcriture->desc,
+                                gpioEcriture->info,
+                                &lignesBitmap);
+    // En noyau linux les fonctions retourne un entier negatif si ya une erreur
+    // D'ou la raison qu'on utilise plus petit que 0                             
+    if (ret < 0) {
+        printk(KERN_ALERT
+               "SETR_CLAVIER_IRQ : Erreur lors du rearmement des lignes\n");
+    }
+
+    // Reactive le traitement des interruptions
+    /*
+        On fait pas juste mettre irqEncours = 0, car on est dans un cas d'interuption avec tasklet
+        On veut rendre ca le plus rapide possible, donc on met une operation atomique    
+    */
+    atomic_set(&irqEnCours, 0);
 
 }
 
