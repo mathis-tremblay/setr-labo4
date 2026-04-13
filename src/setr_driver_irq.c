@@ -573,6 +573,7 @@ static void __exit setrclavier_exit(void){
     // TODO
     // Déclarez _toutes_ vos variables locales ici (le module est compilé avec un standard générant
     // un warning si une variable est déclarée après toute ligne de code)
+    int i; // simple index pour les boucles
 
     // TODO
     // Écrivez le code permettant de relâcher (libérer) les GPIO
@@ -581,8 +582,29 @@ static void __exit setrclavier_exit(void){
     // 2) Libérez les GPIO obtenus dans l'initialisation
     // 3) Retirez la table de correspondances avec gpiod_remove_lookup_table
 
+    // S'assurer qu'aucun tasklet planifié ne reste actif
+    /*
+        En gros j'ai ajouter ca dans le cas qu'on tasklet est en attente ou en cours quand on exit
+        On le kill donc pour eviter ca
+        Si on a un tasklet encore actif il peut acceder a des GPIO rendu innactif pis a des buffers detruit
+        Bref on fait crash la patente (kernel panic)
+    */
+    tasklet_kill(&tasklet_polling);
+
+    // 1) Libération des interruptions enregistrer pour les GPIO de lecture
+    for (i = 0; i < NOMBRE_COLONNES; i++){
+        free_irq(irqId[i], NULL);
+    }
+
+    // 2) Liberation des GPIO
+    gpiod_put_array(gpioLecture);
+    gpiod_put_array(gpioEcriture);
+
+    // 3) Retrait de la table de correspondances
+    gpiod_remove_lookup_table(&gpios_table);
 
     // On retire correctement les différentes composantes du pilote
+    // C'est du code du prof
     device_destroy(setrClasse, MKDEV(majorNumber, 0));
     class_destroy(setrClasse);
     unregister_chrdev(majorNumber, DEV_NAME);
