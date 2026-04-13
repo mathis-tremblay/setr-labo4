@@ -358,7 +358,17 @@ static irqreturn_t  setr_irq_handler(unsigned int irq, void *dev_id){
     // TODO
 
     // On retourne en indiquant qu'on a géré l'interruption
-    return (irqreturn_t) IRQ_HANDLED;
+
+    // Le atomic read est pas obligatoire, c'est techniquement juste une optimisation
+    // La protection est deja fais dans atomic_xchg
+    // Bref, c'est coherant mais pas obligatoire pentoute jpense
+    if (atomic_read(&irqEnCours) == 0) {
+        // Non bloquant
+        // Demande au noyau d’exec ce tasklet dès que possible (après interruption)
+        tasklet_schedule(&tasklet_polling);
+    }
+
+    return (irqreturn_t)IRQ_HANDLED;
 }
 
 
