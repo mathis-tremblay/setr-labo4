@@ -378,8 +378,14 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
     size_t aLire;
     size_t premierBloc;
     size_t secondBloc;
+
     // TODO
     // Implémentez cette fonction de lecture
+    //
+    // Notez que si le reste de votre code est cohérent, elle peut être _exactement_
+    // la même que pour le driver par polling. Le reste des explications est simplement
+    // un copier coller des explications de l'autre driver.
+
     // Celle-ci doit copier N caractères dans le buffer fourni en paramètre, N étant le minimum
     // entre le nombre d'octets disponibles dans le buffer et le nombre d'octets demandés (paramètre len).
     // Cette fonction DOIT se synchroniser au reste du module avec le mutex.
@@ -394,7 +400,7 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
     (void)filep;
 
     if (mutex_lock_interruptible(&sync)){
-        return -ERESTARTSYS; // si ne retoune pas 0, alors un signal d'arrêt a été reçu
+        return -ERESTARTSYS;
     }
 
     if (posCouranteLecture == posCouranteEcriture){
@@ -402,41 +408,45 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
         return 0; // buffer vide
     }
 
-    // calcule du nb d'octets disponibles
+    // Calcul du nombre d'octets disponibles dans le buffer circulaire
     if (posCouranteEcriture >= posCouranteLecture){
         disponible = posCouranteEcriture - posCouranteLecture;
     } else {
         disponible = TAILLE_BUFFER - posCouranteLecture + posCouranteEcriture;
     }
 
-    // minimum entre le nombre d'octets disponibles dans le buffer et le nombre d'octets demandés (len)
+    // On lit le minimum entre ce qui est disponible et ce qui est demandé
     aLire = min(len, disponible);
 
-    // on divise en 2 blocs dans le cas où on doit faire un "wrap around" du buffer circulaire
+    // Premier bloc : de posCouranteLecture jusqu'à la fin du buffer
     premierBloc = min(aLire, TAILLE_BUFFER - posCouranteLecture);
+
+    // Second bloc : reprise au début du buffer si wrap-around
     secondBloc = aLire - premierBloc;
 
-    // copie dans le buffer de l'utilisateur
-    if (copy_to_user(buffer, &data[posCouranteLecture], premierBloc)) {
-        mutex_unlock(&sync);
-        return -EFAULT;
-    }
-    if (secondBloc > 0 && copy_to_user(buffer + premierBloc, &data[0], secondBloc)) {
+    // Copie vers l'espace utilisateur
+    if (copy_to_user(buffer, &data[posCouranteLecture], premierBloc)){
         mutex_unlock(&sync);
         return -EFAULT;
     }
 
-    // update de la position de lecture
+    if (secondBloc > 0){
+        if (copy_to_user(buffer + premierBloc, &data[0], secondBloc)){
+            mutex_unlock(&sync);
+            return -EFAULT;
+        }
+    }
+
+    // Mise à jour de la position de lecture
     posCouranteLecture = (posCouranteLecture + aLire) % TAILLE_BUFFER;
 
-    // update de l'offset (si pas NULL), probablement pas utile dans notre cas, mais bonne pratique
+    // Mise à jour de l'offset si fourni
     if (offset != NULL){
         *offset += aLire;
     }
 
-    // fin lecture
     mutex_unlock(&sync);
-    return aLire; // nb octets lus
+    return aLire;
 }
 
 // On enregistre les fonctions d'initialisation et de destruction

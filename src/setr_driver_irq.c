@@ -629,6 +629,10 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
     // TODO
     // Déclarez _toutes_ vos variables locales ici (le module est compilé avec un standard générant
     // un warning si une variable est déclarée après toute ligne de code)
+    size_t disponible;
+    size_t aLire;
+    size_t premierBloc;
+    size_t secondBloc;
 
     // TODO
     // Implémentez cette fonction de lecture
@@ -647,7 +651,56 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
     // revienne alors à 0. Il est donc tout à fait possible que posCouranteEcriture soit INFÉRIEUR à
     // posCouranteLecture, et vous devez gérer ce cas sans perdre de caractères et en respectant les
     // autres conditions (par exemple, ne jamais copier plus que len caractères).
-    return 0; // TODO: temporaire pour compilation, à changer
+
+    // variable filep est volontairement inutiliser
+    (void)filep;
+
+    if (mutex_lock_interruptible(&sync)){
+        return -ERESTARTSYS; // si ne retoune pas 0, alors un signal d'arrêt a été reçu
+    }
+
+    if (posCouranteLecture == posCouranteEcriture){
+        mutex_unlock(&sync);
+        return 0; // buffer vide
+    }
+
+    // Calcul du nb d'octets disponibles
+    if (posCouranteEcriture >= posCouranteLecture){
+        disponible = posCouranteEcriture - posCouranteLecture;
+    } else {
+        disponible = TAILLE_BUFFER - posCouranteLecture + posCouranteEcriture;
+    }
+
+    // minimum entre le nombre d'octets disponibles dans le buffer et le nombre d'octets demandés (len)
+    aLire = min(len, disponible);
+
+    // on divise en 2 blocs dans le cas où on doit faire un "wrap around" du buffer circulaire
+    premierBloc = min(aLire, TAILLE_BUFFER - posCouranteLecture);
+    secondBloc = aLire - premierBloc;
+
+    // copie dans le buffer de l'utilisateur
+    if (copy_to_user(buffer, &data[posCouranteLecture], premierBloc)){
+        mutex_unlock(&sync);
+        return -EFAULT;
+    }
+
+    if (secondBloc > 0){
+        if (copy_to_user(buffer + premierBloc, &data[0], secondBloc)){
+            mutex_unlock(&sync);
+            return -EFAULT;
+        }
+    }
+
+    // update de la position de lecture
+    posCouranteLecture = (posCouranteLecture + aLire) % TAILLE_BUFFER;
+
+    // update de l'offset (si pas NULL), probablement pas utile dans notre cas, mais bonne pratique
+    if (offset != NULL){
+        *offset += aLire;
+    }
+    // fin lecture
+    mutex_unlock(&sync);
+    return aLire; // nb octets lus
 }
 
 
