@@ -377,6 +377,9 @@ static int __init setrclavier_init(void){
     // Déclarez _toutes_ vos variables locales ici (le module est compilé avec un standard générant
     // un warning si une variable est déclarée après toute ligne de code)
     int ok;
+    int i; // simple index pour les boucles
+    unsigned long lignesBitmap; // variable qui représente l’etat de toutes les lignes du clavier sous forme de bits.
+
     printk(KERN_INFO "SETR_CLAVIER_IRQ : Initialisation du driver commencee\n");
 
     majorNumber = register_chrdev(0, DEV_NAME, &fops);
@@ -423,22 +426,142 @@ static int __init setrclavier_init(void){
     // Attention, cette fonction devra être appelée 4 fois (une fois pour chaque GPIO)!
     //
     // Vous devez également initialiser le mutex de synchronisation.
-    
-    unsigned int irqno; // TODO: temporaire pour compilation, à changer
 
-    ok = request_irq(irqno,                 // Le numéro de l'interruption, obtenue avec gpio_to_irq
-         (irq_handler_t) setr_irq_handler,  // Pointeur vers la routine de traitement de l'interruption
-         IRQF_TRIGGER_RISING,               // On veut une interruption sur le front montant (lorsque le bouton est pressé)
-         "setr_irq_handler",                // Le nom de notre interruption
-         NULL);                             // Paramètre supplémentaire inutile pour vous
-    if(ok != 0){
-        printk(KERN_ALERT "Erreur (%d) lors de l'enregistrement IRQ #{%d}!\n", ok, irqno);
+    // 1) Enregistrement de la table de correspondances
+    // En gros sa veut dire :
+    // "quand je demande tel GPIO par nom, voici à quel vrai GPIO matériel ça correspond"
+    gpiod_add_lookup_table(&gpios_table);
+
+    // 2) Récupération des GPIO de lecture
+    /*
+        En gros le noyau fait :
+        1. Prend setrDevice
+        2. Check pour "Lecture" dans lookup table
+        3. Récupère tous les GPIO associer
+        4. Les configure en entree (GPIOD_IN)
+    */
+    gpioLecture = gpiod_get_array(setrDevice, "lecture", GPIOD_IN);
+    // En kernel les fonctions retournent pas NULL mais un ptr valide ou un ptr d'erreur
+    if (IS_ERR(gpioLecture)){
+        // transforme le ptr d’erreur en int (code negatif)
+        ok = PTR_ERR(gpioLecture);
+        printk(KERN_ALERT "SETR_CLAVIER_IRQ : Erreur lors de l'appel de gpiod_get_array en lecture.\n");
+        // On libere tout, c'est pas mal obligatoire en kernel
+        /*
+            Note : il n’y a aucune protection ni garbage collector en kernel.
+            Fac, une erreur de gestion memoire ou ressource peut impacter toute le systeme, pas juste le programme.
+        */
+        gpiod_remove_lookup_table(&gpios_table);
         device_destroy(setrClasse, MKDEV(majorNumber, 0));
         class_destroy(setrClasse);
         unregister_chrdev(majorNumber, DEV_NAME);
         return ok;
     }
 
+    // 2) Récupération des GPIO d'écriture
+    /*
+        En gros le noyau fait :
+        1. Prend setrDevice
+        2. Check pour "ecriture" dans lookup table
+        3. Récupère tous les GPIO associer
+        4. Les configure en sortie et les mets a 0 (GPIOD_OUT)
+    */
+    gpioEcriture = gpiod_get_array(setrDevice, "ecriture", GPIOD_OUT_LOW);
+    // En kernel les fonctions retournent pas NULL mais un ptr valide ou un ptr d'erreur
+    if (IS_ERR(gpioEcriture)){
+        // transforme le ptr d’erreur en int (code negatif)
+        ok = PTR_ERR(gpioEcriture);
+        printk(KERN_ALERT "SETR_CLAVIER_IRQ : Erreur lors de l'appel de gpiod_get_array en ecriture.\n");
+        // On libere tout, c'est pas mal obligatoire en kernel
+        /*
+            Note : il n’y a aucune protection ni garbage collector en kernel.
+            Fac, une erreur de gestion memoire ou ressource peut impacter toute le systeme, pas juste le programme.
+        */
+        gpiod_put_array(gpioLecture);
+        gpiod_remove_lookup_table(&gpios_table);
+        device_destroy(setrClasse, MKDEV(majorNumber, 0));
+        class_destroy(setrClasse);
+        unregister_chrdev(majorNumber, DEV_NAME);
+        return ok;
+    }
+
+    // Initialisation du mutex
+    mutex_init(&sync);
+
+    // Initialisation du flag atomique
+    atomic_set(&irqEnCours, 0);
+
+    // Mettre le clavier dans un etat pret pour les nouvelles interuptions
+    // toutes les lignes à 1 pour que la prochaine vraie pression puisse provoquer un front montant sur une colonne
+    lignesBitmap = 0;
+    for (i = 0; i < NOMBRE_LIGNES; i++){
+        lignesBitmap |= (1UL << i);
+    }
+
+    ok = gpiod_set_array_value(gpioEcriture->ndescs,
+                               gpioEcriture->desc,
+                               gpioEcriture->info,
+                               &lignesBitmap);
+    if (ok < 0){
+        printk(KERN_ALERT "SETR_CLAVIER_IRQ : Erreur lors du rearmement initial des lignes.\n");
+        gpiod_put_array(gpioLecture);
+        gpiod_put_array(gpioEcriture);
+        gpiod_remove_lookup_table(&gpios_table);
+        device_destroy(setrClasse, MKDEV(majorNumber, 0));
+        class_destroy(setrClasse);
+        unregister_chrdev(majorNumber, DEV_NAME);
+        return ok;
+    }
+
+    // Enregistrement d'une interruption pour chaque GPIO de lecture
+    for (i = 0; i < NOMBRE_COLONNES; i++){
+        // On fait la conversion GPIO to IRQ
+        /*
+            C'est obligatoire dans notre cas. 
+            Le noyaux s'en criss des GPIO, il veut des interuptions
+            Donc en gros, on dit "Si ce GPIO change, quelle interruption va etre declancher ?"
+        */
+        irqId[i] = gpiod_to_irq(gpioLecture->desc[i]);
+        if ((int)irqId[i] < 0){
+            ok = (int)irqId[i];
+            printk(KERN_ALERT "SETR_CLAVIER_IRQ : Erreur lors de gpiod_to_irq pour la colonne %d.\n", i);
+            // Si on a une erreur, on libere TOUT les GPIOs
+            // Sa evite un etat partiellement initialiser en kernel, ce qui est dangereux
+            while (--i >= 0){
+                free_irq(irqId[i], NULL);
+            }
+
+            gpiod_put_array(gpioLecture);
+            gpiod_put_array(gpioEcriture);
+            gpiod_remove_lookup_table(&gpios_table);
+            device_destroy(setrClasse, MKDEV(majorNumber, 0));
+            class_destroy(setrClasse);
+            unregister_chrdev(majorNumber, DEV_NAME);
+            return ok;
+        }
+
+        ok = request_irq(irqId[i],                 // Le numéro de l'interruption, obtenue avec gpiod_to_irq
+             (irq_handler_t) setr_irq_handler,     // Pointeur vers la routine de traitement de l'interruption
+             IRQF_TRIGGER_RISING,                  // On veut une interruption sur le front montant
+             "setr_irq_handler",                   // Le nom de notre interruption
+             NULL);                                // Paramètre supplémentaire inutile pour vous
+        if(ok != 0){
+            printk(KERN_ALERT "Erreur (%d) lors de l'enregistrement IRQ #{%d}!\n", ok, irqId[i]);
+            // Si on a une erreur, on libere TOUT les GPIOs
+            // Sa evite un etat partiellement initialiser en kernel, ce qui est dangereux
+            while (--i >= 0){
+                free_irq(irqId[i], NULL);
+            }
+
+            gpiod_put_array(gpioLecture);
+            gpiod_put_array(gpioEcriture);
+            gpiod_remove_lookup_table(&gpios_table);
+            device_destroy(setrClasse, MKDEV(majorNumber, 0));
+            class_destroy(setrClasse);
+            unregister_chrdev(majorNumber, DEV_NAME);
+            return ok;
+        }
+    }
 
     printk(KERN_INFO "SETR_CLAVIER_IRQ : Fin de l'Initialisation!\n"); // Made it! device was initialized
 
