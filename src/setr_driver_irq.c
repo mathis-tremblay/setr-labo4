@@ -231,6 +231,8 @@ void func_tasklet_polling(unsigned long paramf) {
             continue;
         }
 
+        udelay(50); // Petit delai pour essayer de fix un bug
+
         colonnesBitmap = 0;
         ret = gpiod_get_array_value(gpioLecture->ndescs,
                                     gpioLecture->desc,
