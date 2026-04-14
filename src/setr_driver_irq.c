@@ -284,7 +284,9 @@ void func_tasklet_polling(unsigned long paramf) {
     for (ligne = 0; ligne < NOMBRE_LIGNES; ligne++) {
     for (colonne = 0; colonne < NOMBRE_COLONNES; colonne++) {
 
-        /* La touche devient "stable" seulement si elle est vue 2 fois de suite */
+        /* La touche devient "stable" seulement si elle est vue 2 fois de suite 
+           Sa evite beaucoup de touche en double, et c'est la meilleur option vit que on a pas de debouncing
+        */
         if (etatActuel[ligne][colonne] && etatPrecedent[ligne][colonne]) {
             etatStable[ligne][colonne] = 1;
         }
