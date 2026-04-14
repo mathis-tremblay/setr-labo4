@@ -1,0 +1,19 @@
+Question 1 : Avez-vous utilisé un ou des outils d'IA pour ce laboratoire, même seulement en partie (oui/non)?
+Oui
+Répondez aux questions suivantes seulement si vous avez répondu "oui" à la question précédente.
+
+Question 2 : Quels modèles (ex., Claude Opus, Gemini Pro, GPT-Codex, etc.)?
+ChatGPT 5.2 (Guillaume)
+Github Copilote (Mathis)
+
+Question 3 : Pour la réalisation de quelles tâches en particulier? Donnez un exemple de "prompt" utilisé et de résultat.
+Aide avec la compréhension et l'écriture des fonctions à utilisé pour les tasklets
+Aide à la compréhension du code des parties des autres membres de l'équipe
+Aide au debug. Par exemple l'IA nous a dis d'ajouter un udelay pour régler un problème quand on appuyait sur une touche, il pouvait arrivé qu'une autre touche de la même colonne soit écris en plus.
+ 
+Exemple de prompt :
+Voici le code complet du module d'interruption que j'ai fais. Parfois lorsque que ce que j'appuis sur une touche, un autre touche dans la même colonne (par exemple, la colone de (2, 5, 8, 0)). Peut être ajouter en plus. Je ne pense pas que sa soit lier au hardware, ou a la manière que j'appuis sur les touches, car le problème peut survenir dans un cas que j'appuis sur la touche 2 et que le 8 ou 0 est ajouter. Aide moi à trouver le problème.
+
+Question 4 : Avez-vous rencontré des problèmes lors de l'utilisation de l'IA (mauvaise compréhension des commandes fournies, résultats erronés, etc.)? Qu'avez-vous fait pour les régler?
+Oui, il pouvait arriver que l'IA, fasse du IA, c'ést-à-dire que il ajoute du contenu qui manque de sens dans notre contexte. Du genre des fonctions ou méthodes obscure qui sont pas vraiment nécessaire, ou inutilement compliqué.
+Pour régler ça, c'était assez long mais nécessaire; on a review chaque partie de son code en lui posant des questions pour être sur de comprendre ce qu'il faisait et pourquoi il le faisait.
