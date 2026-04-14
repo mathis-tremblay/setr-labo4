@@ -139,6 +139,9 @@ static struct gpio_descs *gpioLecture, *gpioEcriture;
 // pour ne pas répéter une touche qui était déjà enfoncée.
 static int dernierEtat[NOMBRE_LIGNES][NOMBRE_COLONNES] = {0};
 
+static int etatPrecedent[NOMBRE_LIGNES][NOMBRE_COLONNES] = {0};
+static int etatStable[NOMBRE_LIGNES][NOMBRE_COLONNES] = {0};
+
 // Contient les numéros d'interruption pour chaque broche de lecture
 static unsigned int irqId[NOMBRE_COLONNES];               
 
@@ -279,39 +282,44 @@ void func_tasklet_polling(unsigned long paramf) {
                   nbColonnesActives >= 2);
     // On passe sur chaque ligne et colonne du clavier pour verifier    
     for (ligne = 0; ligne < NOMBRE_LIGNES; ligne++) {
-        for (colonne = 0; colonne < NOMBRE_COLONNES; colonne++) {
+    for (colonne = 0; colonne < NOMBRE_COLONNES; colonne++) {
 
-            /*
-                On execute seulement si :
-                Pas de Ghosting (etatAmbigu est a 0)
-                La touche est actuellement appuyer (etatActuel[ligne][colonne])
-                La touche etait pas appuyer avant (!dernierEtat[ligne][colonne])
-            */
-            if (!etatAmbigu &&
-                etatActuel[ligne][colonne] &&
-                !dernierEtat[ligne][colonne]) {
-
-                // Zone critique pour data, posCouranteEcriture et posCouranteLecture    
-                mutex_lock(&sync);
-                
-                // buffer circulaire
-                prochainePosEcriture = (posCouranteEcriture + 1) % TAILLE_BUFFER;
-                if (prochainePosEcriture != posCouranteLecture) {
-                    // convertit la position matricielle en caractère réel
-                    /*
-                        EX : [0][0]->'1'
-                             [1][1]->'5'
-                    */
-                    data[posCouranteEcriture] = valeursClavier[ligne][colonne];
-                    posCouranteEcriture = prochainePosEcriture;
-                }
-
-                mutex_unlock(&sync);
-            }
-            // etat actuel devient dernier etat (logique)
-            dernierEtat[ligne][colonne] = etatActuel[ligne][colonne];
+        /* La touche devient "stable" seulement si elle est vue 2 fois de suite */
+        if (etatActuel[ligne][colonne] && etatPrecedent[ligne][colonne]) {
+            etatStable[ligne][colonne] = 1;
         }
+
+        /* Si elle est relâchée, on la réarme */
+        if (!etatActuel[ligne][colonne]) {
+            etatStable[ligne][colonne] = 0;
+        }
+
+        /* On ajoute seulement au premier passage vers stable */
+        if (!etatAmbigu &&
+            etatActuel[ligne][colonne] &&
+            etatPrecedent[ligne][colonne] &&
+            !dernierEtat[ligne][colonne]) {
+
+            mutex_lock(&sync);
+
+            prochainePosEcriture = (posCouranteEcriture + 1) % TAILLE_BUFFER;
+            if (prochainePosEcriture != posCouranteLecture) {
+                data[posCouranteEcriture] = valeursClavier[ligne][colonne];
+                posCouranteEcriture = prochainePosEcriture;
+            }
+
+            mutex_unlock(&sync);
+
+            dernierEtat[ligne][colonne] = 1;
+        }
+
+        if (!etatActuel[ligne][colonne]) {
+            dernierEtat[ligne][colonne] = 0;
+        }
+
+        etatPrecedent[ligne][colonne] = etatActuel[ligne][colonne];
     }
+}
 
     // Remettre le clavier dans un etat pret pour les nouvelles interuptions
     // toutes les lignes à 1 pour que la prochaine vraie pression puisse provoquer un front montant sur une colonne
