@@ -45,6 +45,8 @@
 #define NOMBRE_LIGNES 4
 #define NOMBRE_COLONNES 3
 
+// Evite un warn
+static void func_tasklet_polling(unsigned long paramf);
 
 // On déclare tout de suite le nom de la fonction gérant les interruptions
 static irqreturn_t  setr_irq_handler(unsigned int irq, void *dev_id);
